@@ -6,7 +6,7 @@
 - [Proposal](#proposal)
   - [Scope](#scope)
   - [UsdSpatialMetricsAPI](#usdspatialmetricsapi)
-  - [UsdGeomSpatialMetricsCompensationAPI](#usdgeomspatialmetricscompensationapi)
+  - [UsdGeomSpatialMetricsXformCompensationAPI](#usdgeomspatialmetricsxformcompensationapi)
   - [Examples](#examples)
   - [Validators](#validators)
   - [Deprecation Cycle and Backward Compatibility](#deprecation-cycle-and-backward-compatibility)
@@ -82,7 +82,7 @@ applied API schema. We propose to introduce a new `UsdSpatialMetricsAPI` on the
 prim, which provides for its subtree's spatial information (`upAxis` and
 `metersPerUnit`). This allows easy detection of differences in spatial metrics
 for a referencing asset and DCC / Clients can then explicitly apply a
-compensating `UsdGeomSpatialMetricsCompensationAPI` which also provides
+compensating `UsdGeomSpatialMetricsXformCompensationAPI` which also provides
 appropriate compensations.
 
 - Doesn't obfuscate any authored data
@@ -96,13 +96,13 @@ appropriate compensations.
   out-of-sync, which we plan to handle via validators.
 
 The proposal below describes `UsdSpatialMetricsAPI` and
-`UsdGeomSpatialMetricsCompensationAPI`, however we also provide an alternative
-to `UsdGeomSpatialMetricsCompensationAPI` for discussion purposes.
+`UsdGeomSpatialMetricsXformCompensationAPI`, however we also provide an alternative
+to `UsdGeomSpatialMetricsXformCompensationAPI` for discussion purposes.
 
 #### Alternative compensation mechanism: compute-on-the-fly in core transform
 
 Instead of having explicit `xformOps` authored on the prim via
-`UsdGeomSpatialMetricsCompensationAPI`, we can have the core transform
+`UsdGeomSpatialMetricsXformCompensationAPI`, we can have the core transform
 computation apply the necessary computations on the fly.
 `UsdGeomXformCache::_GetCtm` composes a prim's transform as
 `ctm(prim) = localXform(prim) * ctm(parent)`; this could be extended so that
@@ -129,7 +129,7 @@ However, there are some trade-offs:
    Metrics Assembler when importing assets. Baking compensation into USD core
    transformation computation means removing this flexibility. With this every
    client routing through USD core's transform would get compensation applied
-   unconditionally. The `UsdGeomSpatialMetricsCompensationAPI` on the other
+   unconditionally. The `UsdGeomSpatialMetricsXformCompensationAPI` on the other
    hand, keeps compensation an explicit, opt-in decision, so that a pipeline
    chooses whether to author it, whether to honor it and whether to run the
    validators that check it.
@@ -139,7 +139,7 @@ However, there are some trade-offs:
    at all, so a compute-on-the-fly mechanism leaves them unreconciled.
 
 Given these trade-offs we plan to proceed with the authored
-`UsdGeomSpatialMetricsCompensationAPI`.
+`UsdGeomSpatialMetricsXformCompensationAPI`.
 
 ## Proposal
 
@@ -154,7 +154,7 @@ Given these trade-offs we plan to proceed with the authored
   - Utility functions to query effective spatial metrics for a given prim
     (ancestor inheritance, etc).
 
-- **`UsdGeomSpatialMetricsCompensationAPI`**
+- **`UsdGeomSpatialMetricsXformCompensationAPI`**
 
   A companion single-apply API schema defined in *usdGeom* schema domain.
   `CanOnlyApply` to `UsdSpatialMetricsAPI`.
@@ -255,9 +255,9 @@ documented schema fallback (`upAxis = "Y"`, `metersPerUnit = 0.01`). It never
 fails to produce a metric. The absence of authored metrics on the
 defaultPrim/root is instead surfaced by validation.
 
-### UsdGeomSpatialMetricsCompensationAPI
+### UsdGeomSpatialMetricsXformCompensationAPI
 
-`UsdGeomSpatialMetricsCompensationAPI` is a single applied API schema, which
+`UsdGeomSpatialMetricsXformCompensationAPI` is a single applied API schema, which
 **can only apply** to prims which have `UsdSpatialMetricsAPI` applied. This API
 which is defined in the `usdGeom` schema domain, provides the following
 **builtin xformOp**, to provide appropriate compensation transformations to be
@@ -299,38 +299,47 @@ a compensation specific layer, like "MetricsAssembler Layer" NVIDIA's Metrics
 Assembler provides, which implements an automatic compensation example via a
 drag-and-drop listener or other asset importing hooks, and a background change
 listener, to update the compensation. Note that this can now use the utility
-methods provided by `UsdGeomSpatialMetricsCompensationAPI` to add these new
+methods provided by `UsdGeomSpatialMetricsXformCompensationAPI` to add these new
 `xformOps`.
 
 Compensation ops are added to `xformOpOrder` as a sparse array edit
 (`VtArrayEdit`, prepended via `VtArrayEditBuilder`), rather than restating the
 prim's full op order.
 
+Note on `!resetXformStack!`: The compensation utilities prepend the compensation
+op via a sparse `VtArrayEdit` and do not attempt to work around `!resetXformStack!`.
+A reset could appear not only on the compensated prim itself but also on a
+descendant, making insert-after-reset impractical. Inserts at a specific array
+index via sparse edits are also fragile, as the index can shift if other edits
+compose. `!resetXformStack!` is an intentional authoring decision: if a prim
+resets its transform stack, it is deliberately opting out of inherited parent
+transforms, including any compensation on an ancestor.
+
 #### Utility Methods
 
 ```cpp
 // instanced methods
-bool UsdGeomSpatialMetricsCompensationAPI::CompensateMetersPerUnit(
+bool UsdGeomSpatialMetricsXformCompensationAPI::CompensateMetersPerUnit(
     double targetMetersPerUnit);
 
-bool UsdGeomSpatialMetricsCompensationAPI::CompensateUpAxis(
+bool UsdGeomSpatialMetricsXformCompensationAPI::CompensateUpAxis(
     TfToken targetUpAxis);
 
-bool UsdGeomSpatialMetricsCompensationAPI::CompensateSpatialMetrics(
+bool UsdGeomSpatialMetricsXformCompensationAPI::CompensateSpatialMetrics(
     double targetMetersPerUnit, TfToken targetUpAxis);
 
-// helper static methods which also apply the UsdGeomSpatialMetricsCompensationAPI
-static bool UsdGeomSpatialMetricsCompensationAPI::ApplyAndCompensate(
+// helper static methods which also apply the UsdGeomSpatialMetricsXformCompensationAPI
+static bool UsdGeomSpatialMetricsXformCompensationAPI::ApplyAndCompensate(
     const UsdPrim prim, double targetMetersPerUnit, TfToken targetUpAxis)
 ```
 
 As mentioned above clients need to explicitly apply
-`UsdGeomSpatialMetricsCompensationAPI` and then they can use the instanced
+`UsdGeomSpatialMetricsXformCompensationAPI` and then they can use the instanced
 `CompensateMetersPerUnit` or `CompensateUpAxis` methods appropriately on the
 prim they need the compensation `xformOps` applied to.
 
 We also plan to provide a static helper API `ApplyAndCompensate`, which applies
-the `UsdGeomSpatialMetricsCompensationAPI` on the specified prim and then
+the `UsdGeomSpatialMetricsXformCompensationAPI` on the specified prim and then
 calling the compensate methods.
 
 These methods manage `xformOpOrder` by authoring a sparse `VtArrayEdit` that
@@ -345,7 +354,7 @@ existing ops without restating them.
 3. If they differ, then set the compensation `xformOp` value and add it to
    `xformOpOrder` appropriately.
 4. If they match, do nothing. Additionally if the
-   `UsdGeomSpatialMetricsCompensationAPI` is applied, then unapply it. (DCC
+   `UsdGeomSpatialMetricsXformCompensationAPI` is applied, then unapply it. (DCC
    Applications can use this appropriately to remove stale compensations).
 
 #### Pseudocode for CompensateMetersPerUnit
@@ -371,12 +380,12 @@ A similar approach will be used for `CompensateUpAxis`.
 #### Why not autoApply to UsdSpatialMetricsAPI?
 
 Compensation `xformOps` might not be required in all scenarios, and if
-`UsdGeomSpatialMetricsCompensationAPI` is auto applied to
+`UsdGeomSpatialMetricsXformCompensationAPI` is auto applied to
 `UsdSpatialMetricsAPI`, it's noisy and confusing to see the extra
 `xformOp:scale:metricsCompensation` and
 `xformOp:rotateX:metricsCompensation` with their respective default values on
 all prims on which `UsdSpatialMetricsAPI` is applied. Additionally an explicit
-application of `UsdGeomSpatialMetricsCompensationAPI` means it's a meaningful
+application of `UsdGeomSpatialMetricsXformCompensationAPI` means it's a meaningful
 breadcrumb, to signal that compensation is happening (or expected) on the prim.
 
 #### XformCommonAPI compatibility (not)
@@ -384,7 +393,7 @@ breadcrumb, to signal that compensation is happening (or expected) on the prim.
 `UsdGeomXformCommonAPI` recognizes only a fixed set of ops (to cater to some
 DCCs specifically) in a specified order:
 `["xformOp:translate", "xformOp:translate:pivot", "xformOp:rotateXYZ", "xformOp:scale", "!invert!xformOp:translate:pivot"]`.
-The suffixes introduced by `UsdGeomSpatialMetricsCompensationAPI` fall outside
+The suffixes introduced by `UsdGeomSpatialMetricsXformCompensationAPI` fall outside
 this list and hence do not conform to `UsdGeomXformCommonAPI`.
 
 Note that this is not special to compensation `xformOps` -- it applies to any
@@ -397,7 +406,7 @@ Compensation is not limited to transforms. Other schema domains may have
 metric-aware attributes that need reconciling and cannot be expressed as an
 `xformOp` -- for example a `PhysicsScene`'s `physics:gravityMagnitude`
 (`9.8 m/s^2`) must change if the asset is referenced into a stage with a
-different `metersPerUnit`. Because `UsdGeomSpatialMetricsCompensationAPI` marks
+different `metersPerUnit`. Because `UsdGeomSpatialMetricsXformCompensationAPI` marks
 the prim as metric-compensated, clients of other domains can key their own
 compensation behavior off it. The `xformOps` are usdGeom's realization of
 compensation; the API schema is what makes the concept addressable by other
@@ -412,10 +421,6 @@ def PhysicsScene "Scene" (
 ) {
     double spatial:metersPerUnit = 1
     float physics:gravityMagnitude = 9.8
-
-    def Mesh "Ground" {
-        point3f[] points = [(0, 0, 0), (100, 0, 0), ...]
-    }
 }
 ```
 
@@ -430,25 +435,19 @@ def Xform "World" (
 
     def PhysicsScene "SceneRef" (
         references = @physicsScene.usd@</Scene>
-        prepend apiSchemas = ["SpatialMetricsCompensationAPI"]
+        prepend apiSchemas = ["SpatialMetricsXformCompensationAPI"]
     ) {
-        uniform token[] xformOpOrder = edit [
-            prepend "xformOp:scale:metricsCompensation"
-        ]
-        float3 xformOp:scale:metricsCompensation = (10, 10, 10)
     }
 }
 ```
 
-The `xformOp:scale:metricsCompensation` reconciles the geometry -- the
-`/World/SceneRef/Ground` `Mesh` prim's `points` and any transforms compose
-correctly in the referencing stage's units. But `physics:gravityMagnitude` is not
-transformable, no `xformOp` can fix it. Because
-`UsdGeomSpatialMetricsCompensationAPI` is applied to the prim, physics clients /
-`usdPhysicsParser` can key off that marker to attach their own compensation
-behavior -- scaling `gravityMagnitude` appropriately for the differing
-`metersPerUnit`. A single schema application addresses both the transform domain
-(via the builtin `xformOps`) and other spatially-aware domains (via the marker).
+`physics:gravityMagnitude` is not transformable; no `xformOp` can fix it.
+Because `UsdGeomSpatialMetricsXformCompensationAPI` is applied to
+`/World/SceneRef`, physics clients / `usdPhysicsParser` can key off that marker
+to attach their own compensation behavior - scaling `gravityMagnitude`
+appropriately for the differing `metersPerUnit`. The `xformOps` are `usdGeom's`
+realization of compensation; the API schema is what makes the concept
+addressable by other domains.
 
 ### Examples
 
@@ -488,11 +487,11 @@ def Xform "World" (
 ```
 
 **Client / DCC detects the mismatch, applies the
-`UsdGeomSpatialMetricsCompensationAPI` or use the static utility method on the
+`UsdGeomSpatialMetricsXformCompensationAPI` or use the static utility method on the
 referenced prim, and updates the referenced asset:**
 ```usda
 def Xform "AssetRef" (
-    prepend apiSchemas = ["SpatialMetricsCompensationAPI"]
+    prepend apiSchemas = ["SpatialMetricsXformCompensationAPI"]
     references = @asset.usd@</Asset>
 ) {
     # authored sparse edit, prepends the compensation op to the asset's own order
@@ -506,7 +505,7 @@ def Xform "AssetRef" (
 **Composed AssetRef:**
 ```usda
 def Xform "AssetRef" (
-    prepend apiSchemas = ["SpatialMetricsCompensationAPI"]
+    prepend apiSchemas = ["SpatialMetricsXformCompensationAPI"]
     references = @asset.usd@</Asset>
 ) {
     # resolved order; authored as a sparse VtArrayEdit that prepends
@@ -524,7 +523,20 @@ def Xform "AssetRef" (
    validator to make sure `UsdSpatialMetricsAPI` is applied to the `rootPrims`
    for the stage. Should be added to `coreValidators`.
 
-2. **Spatial metrics on a referenced prim must match the stage's prim:**
+2. Sub-root references should have `UsdSpatialMetricsAPI` directly applied. A
+   prim with authored references (`prim.HasAuthoredReferences()`) that does not
+   have `UsdSpatialMetricsAPI` directly applied (only inherited from the
+   referencing context) may have lost its source metric across the reference
+   arc. This validator warns so the asset author can apply the API on the
+   intended-to-be-referenced prim. A fixer is provided, which will open the
+   referenced layer on a stage masked to the referenced prim (which will compose
+   all of the prim's ancestors). It then inspects the referenced layer to
+   recover the source prim's effective `SpatialMetricsAPI` values, applies the
+   `UsdSpatialMetricsAPI` on the referenced prim with the original values, and
+   applies appropriate compensation. Very likely this validator will not be
+   included in the default set of usdGeom or usdCore validators.
+
+3. **Spatial metrics on a referenced prim must match the stage's prim:**
    Example: A `Lamp` prim (Y-up) references a `@bulb.usda@</Bulb>` (Z-up) at
    `/Lamp/Bulb`. After referencing, compensation is not applied on `Bulb` and
    hence causing `/Lamp/Bulb` to have different metrics to its ancestor's
@@ -535,18 +547,18 @@ def Xform "AssetRef" (
    This validator should not error when `metricsCompensation:desired` is
    `false`, as the mismatch is then the author's stated intent.
 
-3. **Compensation must reconcile the metric difference:** a prim has
-   `UsdGeomSpatialMetricsCompensationAPI` applied and
+4. **Compensation must reconcile the metric difference:** a prim has
+   `UsdGeomSpatialMetricsXformCompensationAPI` applied and
    `metricsCompensation:desired` is `true`, but the authored compensation does
    not reconcile the prim's spatial metrics with its effective ancestor metrics.
    This validator should error.
 
-4. In cases where an API is applied, a `usd.geom.spatialMetrics` capability
+5. In cases where an API is applied, a `usd.geom.spatialMetrics` capability
    could be validated because an asset could signal that spatial compensation is
    required for correct interpretation of the asset (assuming it's decided to
    add a capability for this).
 
-5. When `metricsCompensation:desired` is `false`, the compensation `xformOps`
+6. When `metricsCompensation:desired` is `false`, the compensation `xformOps`
    and `xformOpOrder` must not be explicitly authored, irrespective of their
    values. This validator should error.
 
@@ -624,7 +636,7 @@ third spatial metrics. We are **not** proposing it, for the following reasons:
 Consider adding a `UsdPhysicsMetricsAPI` for `kilogramsPerUnit`, mirroring
 `UsdSpatialMetricsAPI`, together with a companion
 `UsdPhysicsMetricsCompensationAPI` (analogous to
-`UsdGeomSpatialMetricsCompensationAPI`) that provides the compensation
+`UsdGeomSpatialMetricsXformCompensationAPI`) that provides the compensation
 utilities.
 
 **Some Details.** Though unlike spatial metrics, mass-metric compensation cannot
