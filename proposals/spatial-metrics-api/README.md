@@ -88,7 +88,8 @@ appropriate compensations.
 
 - Doesn't obfuscate any authored data
 - Composes non-destructively over the referenced asset (compensation ops are
-  added to `xformOpOrder` via `AddXformOp`)
+  added to `xformOpOrder` via `AddXformOp`, creating a new, complete 
+  specification for the `xformOpOrder`).
   - Additionally asset changes can be easily detectable.
 - And sidesteps the "semantic roles for spatial metrics" problem entirely,
   because compensation is a single transform on the referenced subtree rather
@@ -315,6 +316,59 @@ prim itself but also on a descendant, making special handling impractical.
 transform stack, it is deliberately opting out of inherited parent transforms,
 including any compensation on an ancestor.
 
+#### Compensation Ordering
+
+Compensation ops are authored at the **end** of `xformOpOrder` (most local),
+so they are applied first to the descendant geometry, converting it from the 
+asset's metric space into the referencing prim's metric space. We want any
+referencing-side ops appended to the prim to operate in the post-compensation
+space.
+
+For example, given an asset authored in centimeters / Z-up referenced into a
+meters / Y-up assembly:
+
+```
+xformOpOrder = ["xformOp:translate",
+                "xformOp:rotateX:metricsCompensation",
+                "xformOp:scale:metricsCompensation"]
+```
+
+A point `P` transforms as:
+`P' = translate * rotateX:metricsCompensation * scale:metricsCompensation * P`
+
+1. `scale:metricsCompensation` scales from centimeters to meters
+2. `rotateX:metricsCompensation` rotates the descendant geometry from Z-up to Y-up
+3. `translate` (referencing-side op) applies in the post-compensation space, 
+i.e. in meters.
+
+**`AddXformOp` smart insertion.** To maintain this ordering, `AddXformOp` is
+taught the following logic when `metricsCompensation` named ops are present in
+`xformOpOrder`:
+
+- Adding a **`metricsCompensation`** named op: push to the end (stays most
+  local).
+- Adding a **non-`metricsCompensation`** op when `metricsCompensation` named
+  ops exist in the order: insert before the first `metricsCompensation` op, so
+  it operates in the post-compensation (assembly) space.
+- Adding a **non-`metricsCompensation`** op when no `metricsCompensation` ops
+  exist: normal push to the end.
+
+**This ensures that an assembly asset author who calls `AddXformOp` to position
+or orient a referenced asset gets an op that operates in the assembly's units
+and orientation, not the asset's.**
+
+**Re-compensation.** When a previously-compensated prim is referenced into a
+stage with different metrics, the compensation ops are already in the composed
+`xformOpOrder` (from the reference). The utility method detects this and updates 
+the existing ops' values via `Set()` -- recomputing from the prim's declared 
+source metric to the new target -- rather than calling `AddXformOp` again. On 
+the referencing layer, `Set()` creates a stronger opinion that shadows the
+referenced layer's old compensation value. If the reference is later removed,
+the old compensation value is still intact underneath.
+
+The compensation always goes from the prim's declared source metric to the
+next-closest ancestral SpatialMetrics frame in one step.
+
 #### Utility Methods
 
 ```cpp
@@ -342,15 +396,15 @@ We also plan to provide a static helper API `ApplyAndCompensate`, which applies
 the `UsdGeomSpatialMetricsXformCompensationAPI` on the specified prim and then
 calling the compensate methods.
 
-These methods manage `xformOpOrder` via `AddXformOp`, placing the compensation
-ops at the most-local position so that any subsequent client-authored
-transforms take the compensation into account. The compensation op attributes
-always exist on a prim with the API applied (they are builtins with identity
-fallbacks), but may not be in `xformOpOrder`. The utility checks the composed
-`xformOpOrder` first: if the ops are already present, it updates their values
-via `Set()`; otherwise it calls `AddXformOp`. This check is required because
-`AddXformOp` raises a coding error on duplicate entries. See
-[Compensation Ordering](#compensation-ordering) for details.
+These methods manage `xformOpOrder` via the modified `metricsCompensation` aware 
+`AddXformOp`, placing the compensation ops at the most-local position so that 
+any subsequent client-authored transforms take the compensation into account. 
+The compensation op attributes always exist on a prim with the API applied (they
+are builtins with identity fallbacks), but may not be in `xformOpOrder`. The 
+utility method checks the composed `xformOpOrder` first: if the ops are already 
+present, it updates their values via `Set()`; otherwise it calls `AddXformOp`. 
+This check is required because `AddXformOp` raises a coding error on duplicate 
+entries. See [Compensation Ordering](#compensation-ordering) for details.
 
 #### Compensation Workflow
 
@@ -377,154 +431,11 @@ CompensateMetersPerUnit(prim, targetMetersPerUnit)
 
     scaleFactor = primMPU / targetMetersPerUnit
     # set xformOp:scale:metricsCompensation using scaleFactor
-    # add to xformOpOrder via AddXformOp (or Set() if already in order)
+    # append to xformOpOrder via AddXformOp (or Set() if already in order)
     return true
 ```
 
 A similar approach will be used for `CompensateUpAxis`.
-
-#### Compensation Ordering
-
-Compensation ops are authored at the **end** of `xformOpOrder` (most local),
-so they are applied first to the raw geometry, converting it from the asset's
-metric space into the referencing prim's metric space. Any referencing-side ops
-added to the prim operate in the post-compensation space.
-
-For example, given an asset authored in centimeters / Z-up referenced into a
-meters / Y-up assembly:
-
-```
-xformOpOrder = ["xformOp:translate",
-                "xformOp:scale:metricsCompensation",
-                "xformOp:rotateX:metricsCompensation"]
-```
-
-A point `P` transforms as:
-`P' = translate * scale:metricsCompensation * rotateX:metricsCompensation * P`
-
-1. `rotateX:metricsCompensation` rotates the raw geometry from Z-up to Y-up
-2. `scale:metricsCompensation` scales from centimeters to meters
-3. `translate` (referencing-side op) applies in the post-compensation space
-
-**`AddXformOp` smart insertion.** To maintain this ordering, `AddXformOp` is
-taught the following logic when `metricsCompensation` named ops are present in
-`xformOpOrder`:
-
-- Adding a **`metricsCompensation`** named op: push to the end (stays most
-  local).
-- Adding a **non-`metricsCompensation`** op when `metricsCompensation` named
-  ops exist in the order: insert before the first `metricsCompensation` op, so
-  it operates in the post-compensation (assembly) space.
-- Adding a **non-`metricsCompensation`** op when no `metricsCompensation` ops
-  exist: normal push to the end.
-
-This ensures that an assembly author who calls `AddXformOp` to position or
-orient a referenced asset gets an op that operates in the assembly's units and
-orientation, not the asset's.
-
-**Re-compensation.** When a previously-compensated prim is referenced into a
-stage with different metrics, the compensation ops are already in the composed
-`xformOpOrder` (from the reference). The utility detects this and updates the
-existing ops' values via `Set()` -- recomputing from the prim's declared source
-metric to the new target -- rather than calling `AddXformOp` again. On the
-referencing layer, `Set()` creates a stronger opinion that shadows the
-referenced layer's old compensation value. If the reference is later removed,
-the old compensation value is still intact underneath.
-
-For example, a bulb prop (cm / Z-up) is compensated into a lamp asset
-(cm / Y-up) using the compensation utility -- only upAxis differs:
-
-```usda
-# lamp.usda (cm / Y-up)
-def Xform "Lamp" (
-    prepend apiSchemas = ["SpatialMetricsAPI"]
-) {
-    double spatial:metersPerUnit = 0.01
-    token spatial:upAxis = "Y"
-
-    def Xform "BulbRef" (
-        references = @bulb.usd@</Bulb>
-        prepend apiSchemas = ["SpatialMetricsXformCompensationAPI"]
-    ) {
-        # artist positions the bulb in the lamp
-        double3 xformOp:translate:bulbPosition = (0, 0.5, 0)
-
-        # compensation applied by utility: cm/Z-up -> cm/Y-up (upAxis only)
-        uniform token[] xformOpOrder = [
-            "xformOp:translate:bulbPosition",
-            "xformOp:scale:metricsCompensation",
-            "xformOp:rotateX:metricsCompensation"
-        ]
-        float3 xformOp:scale:metricsCompensation = (1, 1, 1)
-        float xformOp:rotateX:metricsCompensation = -90
-    }
-}
-```
-
-The lamp is then referenced into a table asset (decimeters / Z-up) -- both
-upAxis and metersPerUnit differ from the lamp. The compensation utility sees
-the compensation ops already in the composed `xformOpOrder` and overwrites
-their values with a direct cm -> decimeters / Z-up conversion:
-
-```usda
-# table.usda (decimeters / Z-up)
-def Xform "Table" (
-    prepend apiSchemas = ["SpatialMetricsAPI"]
-) {
-    double spatial:metersPerUnit = 0.1
-    token spatial:upAxis = "Z"
-
-    def Xform "LampRef" (
-        references = @lamp.usd@</Lamp>
-        prepend apiSchemas = ["SpatialMetricsXformCompensationAPI"]
-    ) {
-        # artist positions the lamp on the table
-        double3 xformOp:translate:lampPosition = (2, 0, 3)
-
-        # compensation applied by utility: cm/Y-up -> decimeters/Z-up
-        uniform token[] xformOpOrder = [
-            "xformOp:translate:lampPosition",
-            "xformOp:scale:metricsCompensation",
-            "xformOp:rotateX:metricsCompensation"
-        ]
-        float3 xformOp:scale:metricsCompensation = (0.1, 0.1, 0.1)
-        float xformOp:rotateX:metricsCompensation = 90
-    }
-}
-```
-
-Composed `xformOpOrder` at each stage:
-
-- **`/Lamp/BulbRef`** in `lamp.usda`:
-  `["xformOp:translate:bulbPosition", "xformOp:scale:metricsCompensation", "xformOp:rotateX:metricsCompensation"]`
-  -- the `metricsCompensation` ops (cm/Z-up -> cm/Y-up) are most local,
-  applied first to geometry. `bulbPosition` is applied after, operating in
-  the lamp's post-compensation space (cm/Y-up).
-
-- **`/Table/LampRef`** in `table.usda`:
-  `["xformOp:translate:lampPosition", "xformOp:scale:metricsCompensation", "xformOp:rotateX:metricsCompensation"]`
-  -- the `metricsCompensation` ops (cm/Y-up -> decimeters/Z-up) are most
-  local, recomputed for the table's metrics. `lampPosition` is applied after,
-  operating in the table's post-compensation space (decimeters/Z-up).
-
-- **`/Table/LampRef/BulbRef`** in `table.usda`:
-  `["xformOp:translate:bulbPosition", "xformOp:scale:metricsCompensation", "xformOp:rotateX:metricsCompensation"]`
-  -- carries through from `lamp.usda` via the reference. The
-  `metricsCompensation` values are still cm/Z-up -> cm/Y-up (the lamp's
-  metrics), since compensation was applied in the lamp context and the table's
-  recompensation applies to `/Table/LampRef`, not to descendants that already
-  have their own compensation. `bulbPosition` is applied after, operating in
-  the lamp's post-compensation space (cm/Y-up).
-
-Note that each prim's `xformOpOrder` contains only its own ops.
-`/Table/LampRef`'s ops (including `lampPosition`) affect BulbRef's world-space
-position through the namespace hierarchy, not by appearing in BulbRef's
-`xformOpOrder`. The xform computation will appropriately have parent
-`LampRef`'s position composed down with `BulbRef`, as parent transformations
-are composed down in the namespace hierarchy.
-
-The compensation always goes from the prim's declared source metric to the
-current target in one step.
 
 #### Why not autoApply to UsdSpatialMetricsAPI?
 
@@ -646,8 +557,8 @@ def Xform "AssetRef" (
     # compensation ops added via AddXformOp (most local, applied first to geometry)
     uniform token[] xformOpOrder = [
         "xformOp:translate",
-        "xformOp:scale:metricsCompensation",
-        "xformOp:rotateX:metricsCompensation"
+        "xformOp:rotateX:metricsCompensation",
+        "xformOp:scale:metricsCompensation"
     ]
     float3 xformOp:scale:metricsCompensation = (1, 1, 1)
     float xformOp:rotateX:metricsCompensation = -90
@@ -700,9 +611,9 @@ def Xform "AssetRef" (
    values. This validator should error.
 
 7. **Compensation ops must be adjacent in `xformOpOrder`:**
-   `xformOp:scale:metricsCompensation` and
-   `xformOp:rotateX:metricsCompensation` must appear adjacent in
-   `xformOpOrder` with no other ops between them (scale first, then rotateX).
+   `xformOp:rotateX:metricsCompensation` and 
+   `xformOp:scale:metricsCompensation` must appear adjacent in
+   `xformOpOrder` with no other ops between them (rotateX first, then scale).
    The compensation utility always authors them in this order so that together
    they form a single atomic metric conversion at the most-local position in
    the op stack (see [Compensation Ordering](#compensation-ordering)). An op
