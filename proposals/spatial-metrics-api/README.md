@@ -341,9 +341,9 @@ A point `P` transforms as:
 3. `translate` (referencing-side op) applies in the post-compensation space, 
 i.e. in meters.
 
-**`AddXformOp` smart insertion.** To maintain this ordering, `AddXformOp` is
-taught the following logic when `metricsCompensation` named ops are present in
-`xformOpOrder`:
+**`AddXformOp` compensation-aware insertion.** To maintain this ordering, 
+`AddXformOp` is taught the following logic when `metricsCompensation` named ops 
+are present in `xformOpOrder`:
 
 - Adding a **`metricsCompensation`** named op: push to the end (stays most
   local).
